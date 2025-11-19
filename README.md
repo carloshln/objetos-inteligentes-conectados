@@ -1,162 +1,120 @@
-# Projeto de Monitoramento de Quedas
-**Sistema IoT com ESP32 + MPU6050 + Protocolo MQTT**
+/*
+Projeto: Monitoramento de Queda
+Autor: Equipe 13 (Andrea, Carlos e Lucas)
+Descrição: Detecta padrões de queda via MPU6050 e publica no Adafruit IO (MQTT).
+Arquivo: Projeto_Monitoramento_de_Queda.ino
+Data: 2025-11-19
+*/
 
-Este projeto implementa um sistema inteligente para detecção de quedas utilizando sensores inerciais, atuadores de alerta e conectividade com a nuvem (Adafruit IO). O sistema foi desenvolvido em C++ (Arduino) e pode ser testado tanto em hardware físico quanto por meio de simulação no Wokwi.
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
 
----
+#define WIFI_SSID "Wokwi-GUEST"
+#define WIFI_PASSWORD ""
+#define WIFI_CHANNEL 6
 
-## 1. Descrição Resumida do Funcionamento
+const char* mqttServer = "io.adafruit.com";
+const int mqttPort = 1883;
+const char* mqttUserName = "INSERIR MQTT USERNAME";
+const char* mqttPassword = "INSERIR MQTT PASSWORD";
+const char* mqttFeed = "INSERIR MQTT FEED";
 
-O projeto monitora constantemente os dados do acelerômetro e giroscópio do módulo MPU6050, conectados ao microcontrolador ESP32.
-Com base nas leituras, o sistema:
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+Adafruit_MPU6050 mpu;
 
-1. Calcula a magnitude da aceleração e da velocidade angular.
-2. Compara com limiares definidos (0.7 g para aceleração e 120°/s para giroscópio).
-3. Caso a magnitude da aceleração fique abaixo de 0.7 g ou a magnitude do giroscópio ultrapasse 120°/s, o sistema detecta uma queda.
-4. Quando a queda é detectada, o sistema:
-   - Aciona o LED vermelho
-   - Aciona o buzzer
-   - Envia o valor **1** ao feed MQTT do Adafruit IO
+#define LED_VERDE  25
+#define LED_VERMELHO 26
+#define BUZZER 27
 
-Quando não há queda, o sistema:
-- Mantém o LED verde aceso
-- Buzzer desligado
-- Envia o valor **0** para o feed MQTT do Adafruit IO
+int quedaDetectada = 0;
+const float LIMIAR_ACEL = 0.7;
+const float LIMIAR_GIRO = 120.0;
 
-O envio MQTT ocorre a cada 2 segundos.
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(LED_VERDE, OUTPUT);
+  pinMode(LED_VERMELHO, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  digitalWrite(LED_VERDE, HIGH);
 
----
+  while (!mpu.begin()) {
+    Serial.println("MPU6050 não conectado!");
+    delay(1000);
+  }
+  Serial.println("MPU6050 pronto!");
 
-## 2. Como Reproduzir o Projeto
+  conectaWiFi();
+  mqttClient.setServer(mqttServer, mqttPort);
+}
 
-### **Configuração no Adafruit IO**
-1. Acesse: `https://io.adafruit.com`.
-2. Faça login na sua conta ou crie uma.
-    Anote o seu Username, pois ele será utilizado para a conexão MQTT.
-3. No menu, clique em `Feeds → New Feed`.
-4. Preencha:
-    - Name: (sua escolha)
-    - Description: (opcional)
-5. Clique em `Create`.
-6. No feed criado, em `Settings → Feed Info`: Anote o seu `MQTT by Key` (SEU_USUARIO/feeds/FEED_KEY)
+void loop() {
+  if (!mqttClient.connected()) conectaMQTT();
+  mqttClient.loop();
 
-**Obtendo a chave AIO**
-1. Clique na chave amarela no painel do Adafruit IO.
-2. Anote a sua `Active Key`.
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
 
-### **Hardware real**
-1. Faça o upload do arquivo `Projeto_Monitoramento_de_Queda.ino`.
-2. Edite diretamente no arquivo `.ino` os parâmetros:
-   - Nome da rede Wi-Fi (`WIFI_SSID`)
-   - Senha da rede (`WIFI_PASSWORD`)
-   - Usuário MQTT do Adafruit IO
-   - Chave AIO
-   - Feed MQTT
-3. Realize as conexões elétricas conforme tópico **5. Ligações Elétricas**.
-4. Abra o painel no Adafruit IO e monitore o feed configurado.
+  float ax = a.acceleration.x / 9.80665;
+  float ay = a.acceleration.y / 9.80665;
+  float az = a.acceleration.z / 9.80665;
+  float gx = g.gyro.x * 57.2958;
+  float gy = g.gyro.y * 57.2958;
+  float gz = g.gyro.z * 57.2958;
 
-### **Simulação no Wokwi**
-1. Acesse o link de simulação: [Simulação no Wokwi](https://wokwi.com/projects/442893909925074945).
-2. Importe o código `.ino`.
-3. Substitua os parâmetros de configuração.
-4. Execute a simulação e visualize o LED, o buzzer e o painel no Adafruit IO.
+  float moduloA = sqrt(ax*ax + ay*ay + az*az);
+  float moduloG = sqrt(gx*gx + gy*gy + gz*gz);
 
----
+  if (moduloA < LIMIAR_ACEL || moduloG > LIMIAR_GIRO) {
+    quedaDetectada = 1;
+    digitalWrite(LED_VERDE, LOW);
+    digitalWrite(LED_VERMELHO, HIGH);
+    tone(BUZZER, 4000);
+  } else {
+    quedaDetectada = 0;
+    digitalWrite(LED_VERDE, HIGH);
+    digitalWrite(LED_VERMELHO, LOW);
+    noTone(BUZZER);
+  }
 
-## 3. Software Desenvolvido (C++ / Arduino)
+  // Publica no feed
+  char payload[2];
+  snprintf(payload, sizeof(payload), "%d", quedaDetectada);
+  if(mqttClient.publish(mqttFeed, payload)) {
+    Serial.print("Enviado: ");
+    Serial.println(payload);
+  } else {
+    Serial.println("Falha no envio!");
+  }
 
-O arquivo principal do projeto é: `/Projeto_Monitoramento_de_Queda.ino`.
+  delay(2000);
+}
 
-O software é responsável por:
+void conectaWiFi() {
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD, WIFI_CHANNEL);
+  Serial.print("Conectando ao WiFi ");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(200);
+  }
+  Serial.println(" Conectado!");
+  Serial.print("IP: "); Serial.println(WiFi.localIP());
+}
 
-- Inicializar o MPU6050 via I2C
-- Medir aceleração e velocidade angular
-- Calcular magnitudes dos vetores
-- Detectar eventos de queda
-- Controlar LEDs e buzzer
-- Conectar ao Wi-Fi
-- Publicar valores no MQTT/Adafruit IO
-
-### Principais bibliotecas utilizadas
-
-| Biblioteca | Função |
-|-----------|--------|
-| Wire.h | Comunicação I2C |
-| Adafruit_MPU6050.h e Adafruit_Sensor.h | Leitura de sensores do módulo MPU6050 |
-| PubSubClient.h | Comunicação MQTT |
-| WiFi.h | Conexão com a rede Wi-Fi |
-
-### Parâmetros importantes do algoritmo
-
-- Limiar de aceleração: **0.7 g**
-- Limiar de giroscópio: **120°/s**
-- Tempo entre verificações: **2 segundos**
-- LEDs: verde para normalidade / vermelho para queda
-- Buzzer: desativado para normalidade / ativado para queda
-
----
-
-## 4. Hardware Utilizado
-
-### Microcontrolador
-- **ESP32 DevKit V1**
-  - Tensão: 3.3V
-  - Wi-Fi 802.11 b/g/n
-  - Bluetooth 4.2
-
-### Sensor inercial
-- **MPU6050**
-  - Acelerômetro 3 eixos
-  - Giroscópio 3 eixos
-  - Interface I2C (endereço padrão 0x68)
-
-### Atuadores
-- LED verde
-- LED vermelho
-- Buzzer (passivo)
-
----
-
-## 5. Ligações Elétricas (Pinout)
-
-### **Conexão ESP32 → MPU6050 (I2C)**
-
-| MPU6050 | ESP32 |
-|---------|--------|
-| VCC | 3.3V |
-| GND | GND |
-| SDA | GPIO 21 |
-| SCL | GPIO 22 |
-
-### **LEDs e Buzzer**
-
-| Componente | ESP32 | Observações |
-|-----------|-------|-------------|
-| LED Verde | GPIO 25 | Com resistor de 220 Ω |
-| LED Vermelho | GPIO 26 | Com resistor de 220 Ω |
-| Buzzer | GPIO 27 | Buzzer passivo, GND no GND |
-
----
-
-## 6. Interfaces, Protocolos e Comunicação
-
-### **MQTT – Adafruit IO**
-- Protocolo: MQTT
-- Broker: `io.adafruit.com`
-- Autenticação: usuário + chave AIO
-- Feed configurado diretamente no código: `SEU_USUARIO/feeds/FEED_KEY`
-- Mensagens publicadas: **1** → queda detectada / **0** → normalidade
-
-### Publicação MQTT a cada 2s:
-```text
-queda: 0 ou 1
-```
-
----
-
-## 7. Equipe / Autoria
-
-### Projeto desenvolvido como parte da disciplina **Objetos Inteligentes Conectados**
-- Grupo: 13 (Andrea, Carlos e Lucas)
-- Universidade Presbiteriana Mackenzie
-- Data: 2025-11-19
+void conectaMQTT() {
+  while (!mqttClient.connected()) {
+    Serial.print("Conectando ao Adafruit MQTT...");
+    String clientID = "ESP32Client-" + String(random(0xffff), HEX);
+    if (mqttClient.connect(clientID.c_str(), mqttUserName, mqttPassword)) {
+      Serial.println(" conectado!");
+    } else {
+      Serial.print(" falha, rc=");
+      Serial.println(mqttClient.state());
+      delay(3000);
+    }
+  }
+}
